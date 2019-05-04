@@ -8,64 +8,75 @@
 
 from flask import Flask, request, Response, json, jsonify
 from src.remote_signer import RemoteSigner
-from os import path
-import logging
+from logging import warning, info, basicConfig, INFO, error
+from google.cloud import kms_v1
+from hashlib import blake2b, sha256
+from base58check import b58encode
+from uuid import uuid4
+import socket
 
-logging.basicConfig(filename='./remote-signer.log', format='%(asctime)s %(message)s', level=logging.INFO)
+P2PK_MAGIC = bytes.fromhex('03b28b7f') #unpack('>L', b'\x03\xb2\x8b\x7f')[0]
+P2HASH_MAGIC = bytes.fromhex('06a1a4') #unpack('>L', b'\x00\x06\xa1\xa4')[0]
+
+basicConfig(filename='./remote-signer.log', format='%(asctime)s %(message)s', level=INFO)
 
 app = Flask(__name__)
 
-# sample config used for testing
 config = {
-    'hsm_username': 'resigner',
-    'hsm_slot': 1,
-    'hsm_lib': '/opt/cloudhsm/lib/libcloudhsm_pkcs11.so',
-    'node_addr': 'http://node.internal:8732',
-    'keys': {
-        'tz3aTaJ3d7Rh4yXpereo4yBm21xrs4bnzQvW': {
-            'public_key': 'p2pk67jx4rEadFpbHdiPhsKxZ4KCoczLWqsEpNarWZ7WQ1SqKMf7JsS',
-            'private_handle': 7,
-            'public_handle': 9
-        }
-    }
+    project_id = 'cloudhsm',  # your GCP project name
+    location = 'global' # your GCP location
+    keyring = 'tezzigator-signer' name of your GCP keyring
+    'node_addr': 'http://127.0.0.1:8732',
+    'keys': {},  # to be auto-populated
+    'bakerid': socket.getfqdn() + '_' + str(uuid4())
 }
+info("Getting public keys from HSM")
+kvurl = 'https://' + config['kv_name_domain'] + '.vault.azure.net'
+kvclient = KeyVaultClient(MSIAuthentication(resource='https://vault.azure.net'))
+keys = kvclient.get_keys(kvurl)
+for key in keys:
+    keyname = key.kid.split('/')
+    keydat = kvclient.get_key(kvurl, keyname[-1], '').key
 
-logging.info('Opening keys.json')
-if path.isfile('keys.json'):
-    logging.info('Found keys.json')
-    with open('keys.json', 'r') as myfile:
-        json_blob = myfile.read().replace('\n', '')
-        logging.info('Parsed keys.json successfully as JSON')
-        config = json.loads(json_blob)
-        logging.info('Config contains: {}'.format(json.dumps(config, indent=2)))
+    parity = bytes([2])
+    if int.from_bytes(keydat.y, 'big') % 2 == 1:
+        parity = bytes([3])
+    shabytes = sha256(sha256(P2PK_MAGIC + parity + keydat.x).digest()).digest()[:4]
+    public_key = b58encode(P2PK_MAGIC + parity + keydat.x + shabytes).decode()
+    blake2bhash = blake2b(parity + keydat.x, digest_size=20).digest()
+    shabytes = sha256(sha256(P2HASH_MAGIC + blake2bhash).digest()).digest()[:4]
+    pkhash = b58encode(P2HASH_MAGIC + blake2bhash + shabytes).decode()
 
+    config['keys'].update({pkhash:{'kv_keyname':keyname[-1], 'public_key':public_key}})
+    info('retrieved key info: kevault keyname: ' + keyname[-1] + ' pkhash: ' + pkhash + ' - public_key: ' + public_key)
 
+    
 @app.route('/keys/<key_hash>', methods=['POST'])
 def sign(key_hash):
+    p2sig=''
     response = None
     try:
         data = request.get_json(force=True)
         if key_hash in config['keys']:
-            logging.info('Found key_hash {} in config'.format(key_hash))
+            info('Found key_hash {} in config'.format(key_hash))
             key = config['keys'][key_hash]
-            logging.info('Attempting to sign {}'.format(data))
-            rs = RemoteSigner(config, data)
-            response = jsonify({
-                'signature': rs.sign(key['private_handle'])
-            })
-            logging.info('Response is {}'.format(response))
+            kvclient = KeyVaultClient(MSIAuthentication(resource='https://vault.azure.net'))
+            info('Calling remote-signer method {}'.format(data))
+            p2sig = RemoteSigner(kvclient, key['kv_keyname'], config, request.environ['REMOTE_ADDR'], data).sign()
+            response = jsonify({'signature': p2sig})
+            info('Response is {}'.format(response))
         else:
-            logging.warning("Couldn't find key {}".format(key_hash))
+            warning("Couldn't find key {}".format(key_hash))
             response = Response('Key not found', status=404)
     except Exception as e:
         data = {'error': str(e)}
-        logging.error('Exception thrown during request: {}'.format(str(e)))
+        error('Exception thrown during request: {}'.format(str(e)))
         response = app.response_class(
             response=json.dumps(data),
             status=500,
             mimetype='application/json'
         )
-    logging.info('Returning flask response {}'.format(response))
+    info('Returning flask response {}'.format(response))
     return response
 
 
@@ -78,19 +89,19 @@ def get_public_key(key_hash):
             response = jsonify({
                 'public_key': key['public_key']
             })
-            logging.info('Found public key {} for key hash {}'.format(key['public_key'], key_hash))
+            info('Found key name {} - public_key {} for  hash {}'.format(key['kv_keyname'], key['public_key'], key_hash))
         else:
-            logging.warning("Couldn't public key for key hash {}".format(key_hash))
+            warning("Couldn't find key info for pk_hash {}".format(key_hash))
             response = Response('Key not found', status=404)
     except Exception as e:
         data = {'error': str(e)}
-        logging.error('Exception thrown during request: {}'.format(str(e)))
+        error('Exception thrown during request: {}'.format(str(e)))
         response = app.response_class(
             response=json.dumps(data),
             status=500,
             mimetype='application/json'
         )
-    logging.info('Returning flask response {}'.format(response))
+    info('Returning flask response {}'.format(response))
     return response
 
 
@@ -102,6 +113,5 @@ def authorized_keys():
         mimetype='application/json'
     )
 
-
 if __name__ == '__main__':
-    app.run(host='127.0.0.1', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5001, debug=False)
