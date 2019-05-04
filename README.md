@@ -1,48 +1,39 @@
 # Tezos Remote Signer
+This is a Python app that receives remote-signer protocol formatted messages from the Tezos baking client and passes them on to a Google Cloud Platform KMS CloudHSM to be signed.  This script will autodetect all signing keys in your specified keyring and will allow for signing from clients by all keys.
 
-This is a Python Flask app that receives messages from the Tezos baking client and passes them on to a remote HSM to be signed. This software uses the [py-hsm module](https://github.com/bentonstark/py-hsm) to support PKCS#11 signing operations, which means it should support the following HSMs:
 
-* Gemalto SafeNet Luna SA-4
-* Gemalto SafeNet Luna SA-5
-* Gemalto SafeNet Luna PCIe K5/K6
-* Gemalto SafeNet Luna CA-4
-* SafeNet ProtectServer PCIe
-* FutureX Vectera Series
-* Cavium LiquidSecurity FIPS PCIe Card
-* Utimaco Security Server Simulator (SMOS Ver. 3.1.2.3)
-* OpenDNSSEC SoftHSM 2.2.0 (softhsm2)
+## GCP Elements
+* This was developed on an Ubuntu VM (python3 v 3.6.7) running the tezos code, configured with a service account json file specified in GOOGLE_APPLICATION_CREDENTIALS where this service account has appropriate get/list/signing permissions on the keyring/key.
+* KMS with HSM-backed P256 key(s).  Always make sure the version for each key is 1.
+* Only EC signing keys should be present in this particular vault; any other non-signing types of keys will cause failures.
+* GCP currently only supports the SECP256R1 P256 tz3 key.  We expect they will at some point add support for the SECP256K1 P256K tz2 key.
 
-Note that we have only tested it on [AWS CloudHSM](https://aws.amazon.com/cloudhsm/), which is based on the Cavium LiquidSecurity FIPS PCIe Card.
 
 ## Security Notes
-
-Please note that this software does not provide any authentication or authorization. You will need to take care of that yourself. It simply returns the signature for valid payloads, after performing some checks:
+This returns the signature for valid payloads, after performing some checks:
 * Is the message a valid payload?
-* Does the message begin with a 0x01 or 0x02? Indicating it is a baking or endorsement, rather than a 0x03 transfer.
 * Is the message within a certain threshold of the head of the chain? Ensures you are signing valid blocks.
-* For baking signatures, is the block height of the payload greater than the current block height? This prevents double baking.
+* Remote hosts can only sign blocks/endorsements.  Localhost (127.0.0.1) can sign anything.
 
 ## Installation
-
-Please note that you will need to install and compile your vendor's PKCS#11 C library before the py-hsm module will work.
 ```
 virtualenv venv
 source venv/bin/activate
+cd venv
+git clone -b gcp_nonbigtable https://......
 pip install -r requirements.txt
 ```
 
+## Configure settings in the signer.py script
+Python dict called 'config' at top of signer.py  - set the details of your GCP KMS here.
+
 ## Execution
 ```
-export HSM_PASSWORD=blah
 FLASK_APP=signer flask run
 ```
-
-## Running the tests
+or
 ```
-export HSM_PASSWORD=blah
-python -m unittest test/test_remote_signer.py
+nohup python3 -u signer.py &
 ```
-
-## Assistance
-
-If you would like assistance implementing this in a production/secure environment, with high availability, authentication, and authorization, please contact us at contact -at- blockscale.net.
+Look in the remote-signer.log file and you will see all the pkhashes of all the keys that were detected from the keyring.
+Use tezos-client to import those keys from the python signer.
