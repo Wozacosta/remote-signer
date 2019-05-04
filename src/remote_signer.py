@@ -4,46 +4,37 @@
 # released under the MIT license
 #########################################################
 
-import struct
-import string
+from struct import unpack
+from string import hexdigits
 from src.tezos_rpc_client import TezosRPCClient
-from pyhsm.hsmclient import HsmClient, HsmAttribute
-from pyhsm.hsmenums import HsmMech
-from pyhsm.convert import hex_to_bytes, bytes_to_hex
 from binascii import unhexlify
-from os import environ
-import bitcoin
-from pyblake2 import blake2b
-import logging
-
+from hashlib import blake2b, sha256
+from base58check import b58encode
+from base64 import urlsafe_b64encode
+from logging import info, error
 
 class RemoteSigner:
     BLOCK_PREAMBLE = 1
     ENDORSEMENT_PREAMBLE = 2
+    GENERIC_PREAMBLE = 3
     LEVEL_THRESHOLD: int = 120
     TEST_SIGNATURE = 'p2sigfqcE4b3NZwfmcoePgdFCvDgvUNa6DBp9h7SZ7wUE92cG3hQC76gfvistHBkFidj1Ymsi1ZcrNHrpEjPXQoQybAv6rRxke'
-    P256_SIGNATURE = struct.unpack('>L', b'\x36\xF0\x2C\x34')[0]  # results in p2sig prefix when encoded with base58
+    P256_SIGNATURE = bytes.fromhex('36f02c34') #unpack('>L', b'\x36\xF0\x2C\x34')[0]  # results in p2sig prefix when encoded with base58
 
-    def __init__(self, config, payload='', rpc_stub=None):
-        self.keys = config['keys']
+    def __init__(self, kvclient, kv_keyname, config, clientip, payload='', rpc_stub=None):
         self.payload = payload
-        logging.info('Verifying payload')
+        info('Verifying payload')
         self.data = self.decode_block(self.payload)
-        logging.info('Payload {} is valid'.format(self.data))
+        info('Payload {} is valid'.format(self.data))
         self.rpc_stub = rpc_stub
-        self.hsm_slot = config['hsm_slot']
-        hsm_user = config['hsm_username']
-        logging.info('HSM user is {}'.format(config['hsm_username']))
-        logging.info('Attempting to read env var HSM_PASSWORD')
-        hsm_password = environ['HSM_PASSWORD']
-        self.hsm_pin = '{}:{}'.format(hsm_user, hsm_password)
-        self.hsm_libfile = config['hsm_lib']
-        logging.info('HSM lib is {}'.format(config['hsm_lib']))
-        self.node_addr = config['node_addr']
+        self.kvclient = kvclient
+        self.kv_keyname = kv_keyname
+        self.config = config
+        self.remoteip = clientip
 
     @staticmethod
     def valid_block_format(blockdata):
-        return all(c in string.hexdigits for c in blockdata)
+        return all(c in hexdigits for c in blockdata)
 
     @staticmethod
     def decode_block(data):
@@ -55,18 +46,20 @@ class RemoteSigner:
     def is_endorsement(self):
         return list(self.data)[0] == self.ENDORSEMENT_PREAMBLE
 
+    def is_generic(self):
+        return list(self.data)[0] == self.GENERIC_PREAMBLE
+
     def get_block_level(self):
         level = -1
         if self.is_block():
             hex_level = self.payload[10:18]
         else:
             hex_level = self.payload[-8:]
-        level = struct.unpack('>L', unhexlify(hex_level))[0]
-        logging.info('Block level is {}'.format(level))
+        level = unpack('>L', unhexlify(hex_level))[0]
         return level
 
     def is_within_level_threshold(self):
-        rpc = self.rpc_stub or TezosRPCClient(node_url=self.node_addr)
+        rpc = self.rpc_stub or TezosRPCClient(node_url=self.config['node_addr'])
         current_level = rpc.get_current_level()
         payload_level = self.get_block_level()
         if self.is_block():
@@ -74,43 +67,42 @@ class RemoteSigner:
         else:
             within_threshold = current_level - self.LEVEL_THRESHOLD <= payload_level <= current_level + self.LEVEL_THRESHOLD
         if within_threshold:
-            logging.info('Level {} is within threshold of current level {}'.format(payload_level, current_level))
+            info('Level {} is within threshold of current level {}'.format(payload_level, current_level))
         else:
-            logging.error('Level {} is not within threshold of current level {}'.format(payload_level, current_level))
+            error('Level {} is not within threshold of current level {}'.format(payload_level, current_level))
         return within_threshold
 
     @staticmethod
     def b58encode_signature(sig):
-        return bitcoin.bin_to_b58check(sig, magicbyte=RemoteSigner.P256_SIGNATURE)
+        #return bin_to_b58check(sig, magicbyte=RemoteSigner.P256_SIGNATURE)
+        shabytes = sha256(sha256(RemoteSigner.P256_SIGNATURE + sig).digest()).digest()[:4]
+        return b58encode(RemoteSigner.P256_SIGNATURE + sig + shabytes).decode()
 
-    def sign(self, handle, test_mode=False):
+    def sign(self, test_mode=False):
         encoded_sig = ''
-        data_to_sign = self.payload
-        logging.info('About to sign {} with key handle {}'.format(data_to_sign, handle))
-        if self.valid_block_format(data_to_sign):
-            logging.info('Block format is valid')
-            if self.is_block() or self.is_endorsement():
-                logging.info('Preamble is valid')
-                if self.is_within_level_threshold():
-                    logging.info('Block level is valid')
-                    if test_mode:
-                        return self.TEST_SIGNATURE
+        if self.is_endorsement() or self.is_block(): blocklevel = self.get_block_level()
+        else: blocklevel = 'N/A'
+        info('sign() function in remote_signer now has its data to sign')
+        if self.valid_block_format(self.payload):
+            info('Block format is valid')
+            if not self.is_generic() or (self.remoteip == '127.0.0.1' and self.is_generic()):# or self.is_generic():  # to restrict transactions, just remove the or part
+                info('Preamble is valid.  level is ' + str(blocklevel))
+                if self.is_endorsement() or self.is_block():
+                    if  self.is_within_level_threshold():
+                        info('The request is witin level threshold.. getting signature')
                     else:
-                        logging.info('About to sign with HSM client. Slot = {}, lib = {}, handle = {}'.format(self.hsm_slot, self.hsm_libfile, handle))
-                        with HsmClient(slot=self.hsm_slot, pin=self.hsm_pin, pkcs11_lib=self.hsm_libfile) as c:
-                            hashed_data = blake2b(hex_to_bytes(data_to_sign), digest_size=32).digest()
-                            logging.info('Hashed data to sign: {}'.format(hashed_data))
-                            sig = c.sign(handle=handle, data=hashed_data, mechanism=HsmMech.ECDSA)
-                            logging.info('Raw signature: {}'.format(sig))
-                            encoded_sig = RemoteSigner.b58encode_signature(sig)
-                            logging.info('Base58-encoded signature: {}'.format(encoded_sig))
-                else:
-                    logging.error('Invalid level')
-                    raise Exception('Invalid level')
+                        error('Invalid level')
+                        raise Exception('Invalid level')
+                op = blake2b(unhexlify(self.payload), digest_size=32).digest()
+                kvurl = 'https://' + self.config['kv_name_domain'] + '.vault.azure.net'
+                sig = self.kvclient.sign(kvurl, self.kv_keyname, '', 'ES256', op).result
+                encoded_sig = RemoteSigner.b58encode_signature(sig)
+                info('Base58-encoded signature: {}'.format(encoded_sig))
             else:
-                logging.error('Invalid preamble')
+                error('Invalid preamble')
                 raise Exception('Invalid preamble')
         else:
-            logging.error('Invalid payload')
+            error('Invalid payload')
             raise Exception('Invalid payload')
+
         return encoded_sig
