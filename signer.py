@@ -24,7 +24,7 @@ app = Flask(__name__)
 
 config = {
     project_id = 'cloudhsm',  # your GCP project name
-    location = 'global' # your GCP location
+    location = 'us-central1' # your GCP location
     keyring = 'tezzigator-signer' name of your GCP keyring
     'node_addr': 'http://127.0.0.1:8732',
     'keys': {},  # to be auto-populated
