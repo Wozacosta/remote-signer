@@ -94,9 +94,12 @@ class RemoteSigner:
                         error('Invalid level')
                         raise Exception('Invalid level')
                 op = blake2b(unhexlify(self.payload), digest_size=32).digest()
-                kvurl = 'https://' + self.config['kv_name_domain'] + '.vault.azure.net'
-                sig = self.kvclient.sign(kvurl, self.kv_keyname, '', 'ES256', op).result
-                encoded_sig = RemoteSigner.b58encode_signature(sig)
+                keyid = 'projects/' + self.config['project_id'] + '/locations/' + self.config['location'] + '/keyRings/' + self.config['keyring'] + '/cryptoKeys/' + self.kv_keyname + '/cryptoKeyVersions/1'
+                digest_json = {'sha256': op}
+                response = self.kvclient.asymmetric_sign(keyid, digest_json)
+                print(response)
+                print(len(response.signature))
+                encoded_sig = RemoteSigner.b58encode_signature(response.signature)
                 info('Base58-encoded signature: {}'.format(encoded_sig))
             else:
                 error('Invalid preamble')

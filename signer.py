@@ -65,9 +65,8 @@ def sign(key_hash):
         if key_hash in config['keys']:
             info('Found key_hash {} in config'.format(key_hash))
             key = config['keys'][key_hash]
-            kvclient = KeyVaultClient(MSIAuthentication(resource='https://vault.azure.net'))
             info('Calling remote-signer method {}'.format(data))
-            p2sig = RemoteSigner(kvclient, key['kv_keyname'], config, request.environ['REMOTE_ADDR'], data).sign()
+            p2sig = RemoteSigner(client, key['kv_keyname'], config, request.environ['REMOTE_ADDR'], data).sign()
             response = jsonify({'signature': p2sig})
             info('Response is {}'.format(response))
         else:
