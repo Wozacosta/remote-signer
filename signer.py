@@ -15,6 +15,7 @@ from base58check import b58encode
 from uuid import uuid4
 import socket
 from base64 import b64decode
+from fastecdsa.encoding.pem import PEMEncoder
 
 P2PK_MAGIC = bytes.fromhex('03b28b7f') #unpack('>L', b'\x03\xb2\x8b\x7f')[0]
 P2HASH_MAGIC = bytes.fromhex('06a1a4') #unpack('>L', b'\x00\x06\xa1\xa4')[0]
@@ -37,12 +38,14 @@ parent = client.key_ring_path(config['project_id'], config['location'], config['
 
 for key in client.list_crypto_keys(parent):
     keyname = key.name.split('/')[-1]
-    pubkey = client.get_public_key(parent + '/cryptoKeys/' + keyname + '/cryptoKeyVersions/1')
-    pubkey = pubkey.pem.split('-----BEGIN PUBLIC KEY-----\n')[-1].split('-----END PUBLIC KEY-----')[0].split('\n')
-    pubkey = b64decode(pubkey[0] + pubkey[1])[23:56]
-    shabytes = sha256(sha256(P2PK_MAGIC + pubkey).digest()).digest()[:4]
-    public_key = b58encode(P2PK_MAGIC + pubkey + shabytes).decode()
-    blake2bhash = blake2b(pubkey, digest_size=20).digest()
+    pubkeyasn = client.get_public_key(parent + '/cryptoKeys/' + keyname + '/cryptoKeyVersions/1')
+    keydat = PEMEncoder.decode_public_key(pubkeyasn, curve=None)
+    parity = bytes([2])
+    if keydat.y % 2 == 1:
+        parity = bytes([3])
+    shabytes = sha256(sha256(P2PK_MAGIC + parity + keydat.x).digest()).digest()[:4]
+    public_key = b58encode(P2PK_MAGIC + parity + keydat.x + shabytes).decode()
+    blake2bhash = blake2b(parity + keydat.x, digest_size=20).digest()
     shabytes = sha256(sha256(P2HASH_MAGIC + blake2bhash).digest()).digest()[:4]
     pkhash = b58encode(P2HASH_MAGIC + blake2bhash + shabytes).decode()
 
