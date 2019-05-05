@@ -38,7 +38,6 @@ parent = client.key_ring_path(config['project_id'], config['location'], config['
 for key in client.list_crypto_keys(parent):
     keyname = key.name.split('/')[-1]
     pubkey = client.get_public_key(parent + '/cryptoKeys/' + keyname + '/cryptoKeyVersions/1')
-    print(pubkey)
     pubkey = pubkey.pem.split('-----BEGIN PUBLIC KEY-----\n')[-1].split('-----END PUBLIC KEY-----')[0].split('\n')
     pubkey = b64decode(pubkey[0] + pubkey[1])
     x = pubkey[27:59]

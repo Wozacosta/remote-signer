@@ -10,8 +10,9 @@ from src.tezos_rpc_client import TezosRPCClient
 from binascii import unhexlify
 from hashlib import blake2b, sha256
 from base58check import b58encode
-from base64 import urlsafe_b64encode
+from base64 import b64encode
 from logging import info, error
+from six import indexbytes
 
 class RemoteSigner:
     BLOCK_PREAMBLE = 1
@@ -78,6 +79,14 @@ class RemoteSigner:
         shabytes = sha256(sha256(RemoteSigner.P256_SIGNATURE + sig).digest()).digest()[:4]
         return b58encode(RemoteSigner.P256_SIGNATURE + sig + shabytes).decode()
 
+    @staticmethod
+    def decode_asn1der_sig(sig):
+        length_r = indexbytes(sig, 3)
+        r_data = sig[4:4 + length_r]
+        if length_r == 33: r_data = sig[5:5 + 32]
+        s_data = sig[-32:]
+        return r_data + s_data
+
     def sign(self, test_mode=False):
         encoded_sig = ''
         if self.is_endorsement() or self.is_block(): blocklevel = self.get_block_level()
@@ -96,10 +105,8 @@ class RemoteSigner:
                 op = blake2b(unhexlify(self.payload), digest_size=32).digest()
                 keyid = 'projects/' + self.config['project_id'] + '/locations/' + self.config['location'] + '/keyRings/' + self.config['keyring'] + '/cryptoKeys/' + self.kv_keyname + '/cryptoKeyVersions/1'
                 digest_json = {'sha256': op}
-                response = self.kvclient.asymmetric_sign(keyid, digest_json)
-                print(response)
-                print(len(response.signature))
-                encoded_sig = RemoteSigner.b58encode_signature(response.signature)
+                asn1dersig = self.kvclient.asymmetric_sign(keyid, digest_json).signature
+                encoded_sig = RemoteSigner.b58encode_signature(RemoteSigner.decode_asn1der_sig(asn1dersig))
                 info('Base58-encoded signature: {}'.format(encoded_sig))
             else:
                 error('Invalid preamble')
