@@ -1,5 +1,5 @@
 # Tezos Remote Signer
-This is a Python app that receives remote-signer protocol formatted messages from the Tezos baking client and passes them on to a Google Cloud Platform KMS CloudHSM to be signed.  This script will autodetect all signing keys in your specified keyring and will allow for signing from clients by all keys.
+This is a Python app that receives remote-signer protocol formatted messages from the Tezos baking client and passes them on to a Google Cloud Platform KMS CloudHSM to be signed.  It is based *heavily* on Blockscale's tacoinfra/remote-signer for AWS where  substitutions for GCP signing have been made. A usability improvement is that this script will autodetect all signing keys in your specified keyring and will allow for signing from clients by all keys.  It is *highly* recommended to make a tiny transction to and from your new HSM tz3 account before transferring a large amount to the new tz3 account.
 
 
 ## GCP Elements
@@ -20,7 +20,7 @@ This returns the signature for valid payloads, after performing some checks:
 virtualenv venv
 source venv/bin/activate
 cd venv
-git clone -b gcp_nonbigtable https://......
+git clone -b gcp_nonbigtable https://github.com/tezzigator/remote-signer.git
 pip install -r requirements.txt
 ```
 
